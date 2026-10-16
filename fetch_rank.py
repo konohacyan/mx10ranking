@@ -24,7 +24,11 @@ def fetch_rank():
     return [(item["rankName"], item["num"]) for item in data["data"]]
 
 
+CN_TZ = datetime.timezone(datetime.timedelta(hours=8))  # 北京时间
+
+
 def slot_ts(now):
+    now = now.astimezone(CN_TZ)  # GitHub Actions 服务器是 UTC，统一转北京时间
     minute = (now.minute // 5) * 5
     return now.replace(minute=minute, second=0, microsecond=0).strftime("%m%d%H%M")
 
@@ -62,7 +66,7 @@ def append_to_csv(records, ts):
 
 
 def main():
-    ts = slot_ts(datetime.datetime.now())
+    ts = slot_ts(datetime.datetime.now(datetime.timezone.utc))
     records = fetch_rank()
     append_to_csv(records, ts)
     print(f"已写入列 {ts}: " + ", ".join(f"{n}={v}" for n, v in records))
