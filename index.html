@@ -155,7 +155,7 @@ function render() {
       interaction: { mode: "index", intersect: false },
       plugins: { legend: { position: "top" } },
       scales: {
-        x: { ticks: { maxTicksLimit: 20, maxRotation: 45 } },
+        x: { ticks: { autoSkip: data.labels.length > 40, maxTicksLimit: 40, maxRotation: 45 } },
         y: { title: { display: true, text: "许愿数" } }
       }
     }
