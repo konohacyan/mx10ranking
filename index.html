@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>许愿数趋势图 - 名侦探学院许愿池</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Microsoft YaHei", system-ui, sans-serif; background: #f5f6fa; padding: 20px; color: #333; }
+  h1 { font-size: 20px; margin-bottom: 16px; }
+  .panel { background: #fff; border-radius: 10px; padding: 16px 20px; box-shadow: 0 1px 4px rgba(0,0,0,.08); margin-bottom: 16px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end; }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field label { font-size: 12px; color: #888; }
+  select, input[type="datetime-local"] { padding: 6px 10px; border: 1px solid #d0d3dc; border-radius: 6px; font-size: 14px; }
+  button { padding: 7px 18px; border: none; border-radius: 6px; background: #6c5ce7; color: #fff; font-size: 14px; cursor: pointer; }
+  button:hover { background: #5a4bd1; }
+  button.ghost { background: #eceafc; color: #6c5ce7; }
+  .status { font-size: 13px; color: #999; margin-top: 10px; }
+  .chart-box { height: 65vh; }
+  .hint { font-size: 12px; color: #bbb; margin-top: 6px; }
+</style>
+</head>
+<body>
+<h1>许愿数趋势图 · 《名侦探学院》主创许愿池</h1>
+
+<div class="panel">
+  <div class="controls">
+    <div class="field">
+      <label>显示间隔</label>
+      <select id="interval">
+        <option value="5">5 分钟</option>
+        <option value="30">30 分钟</option>
+        <option value="60">1 小时</option>
+        <option value="1440">1 天</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>起始时间（留空 = 最早数据）</label>
+      <input type="datetime-local" id="startTime">
+    </div>
+    <div class="field">
+      <label>结束时间（留空 = 最新数据）</label>
+      <input type="datetime-local" id="endTime">
+    </div>
+    <button id="applyBtn">应用</button>
+    <button class="ghost" id="reloadBtn">重新加载数据</button>
+    <button class="ghost" onclick="window.open('/wish_records.csv','_blank')">查看 CSV 原始数据</button>
+  </div>
+  <div class="status" id="status">正在加载数据…</div>
+  <div class="hint">提示：点击图例可显示/隐藏某人的折线；鼠标悬停可查看具体数值。</div>
+</div>
+
+<div class="panel chart-box">
+  <canvas id="chart"></canvas>
+</div>
+
+<script>
+const CSV_URL = "wish_records.csv";
+const YEAR = 2026; // 列头格式 MMDDHHMM，无年份
+const PALETTE = ["#6c5ce7","#e17055","#00b894","#0984e3","#e84393","#fdcb6e","#00cec9","#d63031","#636e72","#a29bfe","#55efc4","#fab1a0"];
+
+let raw = { names: [], times: [], values: {} }; // times: Date[], values: name -> number[]（可含 null）
+let chart = null;
+
+// MMDDHHMM -> Date
+function parseTs(s) {
+  return new Date(YEAR, +s.slice(0,2)-1, +s.slice(2,4), +s.slice(4,6), +s.slice(6,8));
+}
+function fmtLabel(d, intervalMin) {
+  const p = n => String(n).padStart(2,"0");
+  return intervalMin >= 1440
+    ? `${p(d.getMonth()+1)}-${p(d.getDate())}`
+    : `${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+async function loadCsv() {
+  const resp = await fetch(CSV_URL + "?_=" + Date.now());
+  if (!resp.ok) throw new Error("HTTP " + resp.status);
+  const text = (await resp.text()).replace(/^\uFEFF/, "");
+  const rows = text.trim().split(/\r?\n/).map(r => r.split(","));
+  const header = rows[0];
+  const times = header.slice(1).map(parseTs);
+  const names = [];
+  const values = {};
+  for (const row of rows.slice(1)) {
+    const name = (row[0] || "").trim();
+    if (!name) continue;
+    names.push(name);
+    values[name] = times.map((_, i) => {
+      const v = (row[i+1] || "").trim();
+      return v === "" ? null : +v;
+    });
+  }
+  raw = { names, times, values };
+  document.getElementById("status").textContent =
+    `已加载 ${times.length} 个时间点 × ${names.length} 人（${fmtLabel(times[0],0)} ~ ${fmtLabel(times[times.length-1],0)}）`;
+}
+
+// 按间隔重采样：时间向下取整到 intervalMin 的桶，每桶取最后一个非空值
+function resample(intervalMin, start, end) {
+  const bucketMs = intervalMin * 60000;
+  const idx = [];
+  for (let i = 0; i < raw.times.length; i++) {
+    const t = raw.times[i];
+    if (start && t < start) continue;
+    if (end && t > end) continue;
+    idx.push(i);
+  }
+  const buckets = new Map(); // bucketStart -> last index
+  for (const i of idx) {
+    const b = Math.floor(raw.times[i].getTime() / bucketMs) * bucketMs;
+    buckets.set(b, i);
+  }
+  const keys = [...buckets.keys()].sort((a,b) => a-b);
+  const labels = keys.map(k => fmtLabel(new Date(k), intervalMin));
+  const datasets = raw.names.map((name, n) => ({
+    label: name,
+    data: keys.map(k => values_at(name, buckets.get(k))),
+    borderColor: PALETTE[n % PALETTE.length],
+    backgroundColor: PALETTE[n % PALETTE.length],
+    spanGaps: true,
+    tension: 0.25,
+    pointRadius: intervalMin >= 1440 ? 4 : 2,
+    borderWidth: 2,
+  }));
+  return { labels, datasets };
+}
+function values_at(name, i) { return raw.values[name][i]; }
+
+function render() {
+  const intervalMin = +document.getElementById("interval").value;
+  const sv = document.getElementById("startTime").value;
+  const ev = document.getElementById("endTime").value;
+  const start = sv ? new Date(sv) : null;
+  const end = ev ? new Date(ev) : null;
+  const data = resample(intervalMin, start, end);
+  if (chart) chart.destroy();
+  chart = new Chart(document.getElementById("chart"), {
+    type: "line",
+    data,
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: { legend: { position: "top" } },
+      scales: {
+        x: { ticks: { maxTicksLimit: 20, maxRotation: 45 } },
+        y: { title: { display: true, text: "许愿数" } }
+      }
+    }
+  });
+}
+
+async function reload() {
+  try {
+    await loadCsv();
+    render();
+  } catch (e) {
+    document.getElementById("status").textContent =
+      "加载失败：" + e.message + "。数据每 5 分钟更新一次，请稍后点击「重新加载数据」。";
+  }
+}
+
+document.getElementById("applyBtn").onclick = render;
+document.getElementById("reloadBtn").onclick = reload;
+reload();
+</script>
+</body>
+</html>
