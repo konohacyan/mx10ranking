@@ -60,6 +60,15 @@
 const CSV_URL = "wish_records.csv";
 const YEAR = 2026; // 列头格式 MMDDHHMM，无年份
 const PALETTE = ["#6c5ce7","#e17055","#00b894","#0984e3","#e84393","#fdcb6e","#00cec9","#d63031","#636e72","#a29bfe","#55efc4","#fab1a0"];
+// 应援色指定（未列出的人用 PALETTE 兜底）
+const NAME_COLORS = {
+  "文韬": "#F88379",    // 珊瑚粉
+  "唐九洲": "#FEA500",  // 胡萝卜色
+  "周峻炜": "#004080",  // 日曜宙蓝
+  "李晋晔": "#C9A0DC",  // 晔猫紫
+  "火树": "#8B0000",    // 暗红
+};
+function colorOf(name, n) { return NAME_COLORS[name] || PALETTE[n % PALETTE.length]; }
 
 let raw = { names: [], times: [], values: {} }; // times: Date[], values: name -> number[]（可含 null）
 let chart = null;
@@ -118,8 +127,8 @@ function resample(intervalMin, start, end) {
   const datasets = raw.names.map((name, n) => ({
     label: name,
     data: keys.map(k => values_at(name, buckets.get(k))),
-    borderColor: PALETTE[n % PALETTE.length],
-    backgroundColor: PALETTE[n % PALETTE.length],
+    borderColor: colorOf(name, n),
+    backgroundColor: colorOf(name, n),
     spanGaps: true,
     tension: 0.25,
     pointRadius: intervalMin >= 1440 ? 4 : 2,
