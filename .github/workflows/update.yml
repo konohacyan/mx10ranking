@@ -21,7 +21,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add wish_records.csv
+          git add wish_records.csv wish_growth.csv
           if ! git diff --cached --quiet; then
             git commit -m "update wish_records $(date -u +%m%d%H%M)"
             git pull --rebase
@@ -29,7 +29,7 @@ jobs:
           fi
 
       - name: Build dist
-        run: mkdir -p dist && cp index.html wish_records.csv dist/
+        run: mkdir -p dist && cp index.html wish_records.csv wish_growth.csv dist/
 
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@v3

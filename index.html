@@ -18,8 +18,14 @@
   button:hover { background: #5a4bd1; }
   button.ghost { background: #eceafc; color: #6c5ce7; }
   .status { font-size: 13px; color: #999; margin-top: 10px; }
-  .chart-box { height: 65vh; overflow-x: auto; }
-  .chart-inner { height: 100%; min-width: 100%; }
+  .chart-box { height: 63vh; overflow-x: auto; display: flex; flex-direction: column; }
+  .chart-inner { flex: 1; min-height: 0; min-width: 100%; }
+  .chart-head { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 4px 16px; margin-bottom: 8px; }
+  .chart-box h2 { font-size: 15px; color: #555; }
+  .legend { list-style: none; display: flex; flex-wrap: wrap; gap: 4px 12px; }
+  .legend li { display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 12px; color: #555; user-select: none; }
+  .legend li.hidden { text-decoration: line-through; opacity: .5; }
+  .legend .box { width: 12px; height: 12px; border-radius: 2px; }
   .hint { font-size: 12px; color: #bbb; margin-top: 6px; }
 </style>
 </head>
@@ -46,7 +52,8 @@
       <input type="datetime-local" id="endTime">
     </div>
     <button id="applyBtn">应用</button>
-    <button class="ghost" id="reloadBtn">重新加载数据</button>
+    <button class="ghost" id="shotWish">保存趋势图截图</button>
+    <button class="ghost" id="shotGrowth">保存增数表截图</button>
     <button class="ghost" onclick="window.open('/wish_records.csv','_blank')">查看 CSV 原始数据</button>
   </div>
   <div class="status" id="status">正在加载数据…</div>
@@ -54,13 +61,27 @@
 </div>
 
 <div class="panel chart-box" id="chartScroll">
+  <div class="chart-head">
+    <h2>许愿数趋势</h2>
+    <ul class="legend" id="legendWish"></ul>
+  </div>
   <div class="chart-inner" id="chartInner">
     <canvas id="chart"></canvas>
   </div>
 </div>
 
+<div class="panel chart-box" id="growthScroll">
+  <div class="chart-head">
+    <h2>许愿数增数表</h2>
+    <ul class="legend" id="legendGrowth"></ul>
+  </div>
+  <div class="chart-inner" id="growthInner">
+    <canvas id="growthChart"></canvas>
+  </div>
+</div>
+
 <script>
-const CSV_URL = "wish_records.csv";
+const CSV_WISH = "wish_records.csv";
 const YEAR = 2026; // 列头格式 MMDDHHMM，无年份
 const PALETTE = ["#6c5ce7","#e17055","#00b894","#0984e3","#e84393","#fdcb6e","#00cec9","#d63031","#636e72","#a29bfe","#55efc4","#fab1a0"];
 // 应援色指定（未列出的人用 PALETTE 兜底）
@@ -74,7 +95,37 @@ const NAME_COLORS = {
 function colorOf(name, n) { return NAME_COLORS[name] || PALETTE[n % PALETTE.length]; }
 
 let raw = { names: [], times: [], values: {} }; // times: Date[], values: name -> number[]（可含 null）
-let chart = null;
+// 两张图共用一套控件；增速图按当前显示间隔对许愿数差分（本间隔末值 - 前一间隔末值）
+const CHARTS = [
+  { src: () => raw, diff: false, scrollId: "chartScroll",  innerId: "chartInner",  canvasId: "chart",       legendId: "legendWish",   yTitle: "许愿数", inst: null },
+  { src: () => raw, diff: true,  scrollId: "growthScroll", innerId: "growthInner", canvasId: "growthChart", legendId: "legendGrowth", yTitle: m => `新增许愿数（个/${fmtInterval(m)}）`, inst: null },
+];
+
+// HTML 图例插件：canvas 被拉宽横滚时内置图例会居中跑出可视区，
+// 故将图例渲染到标题行的 <ul>，固定可见；点击可隐藏/显示对应折线
+const htmlLegend = {
+  id: "htmlLegend",
+  afterUpdate(chart, args, opts) {
+    const ul = document.getElementById(opts.containerId);
+    if (!ul) return;
+    while (ul.firstChild) ul.firstChild.remove();
+    for (const item of chart.options.plugins.legend.labels.generateLabels(chart)) {
+      const li = document.createElement("li");
+      if (item.hidden) li.classList.add("hidden");
+      const box = document.createElement("span");
+      box.className = "box";
+      box.style.background = item.fillStyle;
+      const text = document.createElement("span");
+      text.textContent = item.text;
+      li.append(box, text);
+      li.onclick = () => {
+        chart.setDatasetVisibility(item.datasetIndex, !chart.isDatasetVisible(item.datasetIndex));
+        chart.update();
+      };
+      ul.appendChild(li);
+    }
+  }
+};
 
 // MMDDHHMM -> Date
 function parseTs(s) {
@@ -87,10 +138,16 @@ function fmtLabel(d, intervalMin) {
     : `${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-async function loadCsv() {
-  const resp = await fetch(CSV_URL + "?_=" + Date.now());
-  if (!resp.ok) throw new Error("HTTP " + resp.status);
-  const text = (await resp.text()).replace(/^\uFEFF/, "");
+function fmtInterval(m) {
+  if (m >= 1440) return (m / 1440) + " 天";
+  if (m >= 60) return (m / 60) + " 小时";
+  return m + " 分钟";
+}
+
+async function loadOne(url) {
+  const resp = await fetch(url + "?_=" + Date.now());
+  if (!resp.ok) throw new Error(url + " HTTP " + resp.status);
+  const text = (await resp.text()).replace(/^﻿/, "");
   const rows = text.trim().split(/\r?\n/).map(r => r.split(","));
   const header = rows[0];
   const times = header.slice(1).map(parseTs);
@@ -105,48 +162,94 @@ async function loadCsv() {
       return v === "" ? null : +v;
     });
   }
-  raw = { names, times, values };
+  return { names, times, values };
+}
+
+async function loadCsv() {
+  raw = await loadOne(CSV_WISH);
+  const t = raw.times;
   document.getElementById("status").textContent =
-    `已加载 ${times.length} 个时间点 × ${names.length} 人（${fmtLabel(times[0],0)} ~ ${fmtLabel(times[times.length-1],0)}）`;
+    `已加载 ${t.length} 个时间点 × ${raw.names.length} 人（${fmtLabel(t[0],0)} ~ ${fmtLabel(t[t.length-1],0)}）`;
 }
 
 // 按间隔重采样：时间向下取整到 intervalMin 的桶，每桶取最后一个非空值
-function resample(intervalMin, start, end) {
+// diff=true 时再对桶序列差分：本桶值 - 前一桶值 = 该间隔新增数（首桶无前值为 null）
+function resample(src, intervalMin, start, end, diff) {
   const bucketMs = intervalMin * 60000;
   const idx = [];
-  for (let i = 0; i < raw.times.length; i++) {
-    const t = raw.times[i];
+  for (let i = 0; i < src.times.length; i++) {
+    const t = src.times[i];
     if (start && t < start) continue;
     if (end && t > end) continue;
     idx.push(i);
   }
   const buckets = new Map(); // bucketStart -> last index
   for (const i of idx) {
-    const b = Math.floor(raw.times[i].getTime() / bucketMs) * bucketMs;
+    const b = Math.floor(src.times[i].getTime() / bucketMs) * bucketMs;
     buckets.set(b, i);
   }
   const keys = [...buckets.keys()].sort((a,b) => a-b);
+  const colIdx = keys.map(k => buckets.get(k)); // 每列对应的数据索引
   const labels = keys.map(k => fmtLabel(new Date(k), intervalMin));
-  const datasets = raw.names.map((name, n) => ({
-    label: name,
-    data: keys.map(k => values_at(name, buckets.get(k))),
-    borderColor: colorOf(name, n),
-    backgroundColor: colorOf(name, n),
-    spanGaps: true,
-    tension: 0.25,
-    pointRadius: intervalMin >= 1440 ? 4 : 2,
-    borderWidth: 2,
-  }));
+  // 每桶已取到桶内最新点；最后桶若为未完成间隔（取到的点晚于桶起点），
+  // 标签改用该点实际时间，使最右侧直接显示最新数据时刻（不追加列，避免增速图出现 当前值-同值 的假0）
+  if (keys.length) {
+    const lastTime = src.times[colIdx[colIdx.length - 1]];
+    if (lastTime.getTime() > keys[keys.length - 1]) labels[labels.length - 1] = fmtLabel(lastTime, 0);
+  }
+  const datasets = src.names.map((name, n) => {
+    const vals = colIdx.map(i => src.values[name][i]);
+    return {
+      label: name,
+      data: diff
+        ? vals.map((v, j) => (j === 0 || v == null || vals[j-1] == null) ? null : v - vals[j-1])
+        : vals,
+      borderColor: colorOf(name, n),
+      backgroundColor: colorOf(name, n),
+      spanGaps: true,
+      tension: 0, // B: 直线不贝塞尔，省插值计算
+      pointRadius: 0, // C: 不画圆点，省每帧 arc 绘制；悬停时仍会显示命中点
+      pointHitRadius: 8,
+      borderWidth: 2,
+    };
+  });
   return { labels, datasets };
 }
-function values_at(name, i) { return raw.values[name][i]; }
 
 // 根据数据点数量选默认间隔：5分钟超过40点则升到30分钟，以此类推，最高1天
 function pickDefaultInterval() {
   for (const m of [5, 30, 60, 1440]) {
-    if (resample(m, null, null).labels.length <= 40) return m;
+    if (resample(raw, m, null, null).labels.length <= 40) return m;
   }
   return 1440;
+}
+
+function renderOne(cfg, intervalMin, start, end) {
+  const data = resample(cfg.src(), intervalMin, start, end, cfg.diff);
+  if (cfg.inst) cfg.inst.destroy();
+  // 不抽稀：每个点约 28px，超出宽度时容器横向滚动
+  // 28px 使全量 5 分钟数据的 canvas 物理宽度保持在 GPU 上限内，避免回退 CPU 渲染卡顿
+  const scroll = document.getElementById(cfg.scrollId);
+  document.getElementById(cfg.innerId).style.width =
+    Math.max(scroll.clientWidth - 40, data.labels.length * 28) + "px";
+  cfg.inst = new Chart(document.getElementById(cfg.canvasId), {
+    type: "line",
+    data,
+    plugins: [htmlLegend],
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { display: false }, // 内置图例禁用，改用标题行 HTML 图例
+        htmlLegend: { containerId: cfg.legendId }
+      },
+      scales: {
+        x: { ticks: { autoSkip: true, maxRotation: 45 } }, // E: 仅标签抽稀，数据点仍全量
+        y: { title: { display: true, text: typeof cfg.yTitle === "function" ? cfg.yTitle(intervalMin) : cfg.yTitle } }
+      }
+    }
+  });
 }
 
 function render() {
@@ -155,26 +258,7 @@ function render() {
   const ev = document.getElementById("endTime").value;
   const start = sv ? new Date(sv) : null;
   const end = ev ? new Date(ev) : null;
-  const data = resample(intervalMin, start, end);
-  if (chart) chart.destroy();
-  // 不抽稀：每个点约 70px，超出宽度时容器横向滚动
-  const scroll = document.getElementById("chartScroll");
-  document.getElementById("chartInner").style.width =
-    Math.max(scroll.clientWidth - 40, data.labels.length * 70) + "px";
-  chart = new Chart(document.getElementById("chart"), {
-    type: "line",
-    data,
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      interaction: { mode: "index", intersect: false },
-      plugins: { legend: { position: "top" } },
-      scales: {
-        x: { ticks: { autoSkip: false, maxRotation: 45 } },
-        y: { title: { display: true, text: "许愿数" } }
-      }
-    }
-  });
+  for (const cfg of CHARTS) renderOne(cfg, intervalMin, start, end);
 }
 
 async function reload() {
@@ -184,12 +268,41 @@ async function reload() {
     render();
   } catch (e) {
     document.getElementById("status").textContent =
-      "加载失败：" + e.message + "。数据每 5 分钟更新一次，请稍后点击「重新加载数据」。";
+      "加载失败：" + e.message + "。数据每 5 分钟更新一次，请稍后刷新页面重试。";
   }
 }
 
+// 导出图表完整 PNG：临时把内置图例画入 canvas（HTML 图例不在 canvas 内），
+// 白底合成后下载，随后恢复页面原状；导出的是完整宽度，不受横向滚动影响
+function saveChartImage(cfg, filename) {
+  const chart = cfg.inst;
+  chart.options.plugins.legend.display = true;
+  chart.update("none");
+  const src = document.getElementById(cfg.canvasId);
+  const out = document.createElement("canvas");
+  out.width = src.width;
+  out.height = src.height;
+  const ctx = out.getContext("2d");
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, out.width, out.height);
+  ctx.drawImage(src, 0, 0);
+  const a = document.createElement("a");
+  a.href = out.toDataURL("image/png");
+  a.download = filename;
+  a.click();
+  chart.options.plugins.legend.display = false;
+  chart.update("none");
+}
+
+function stamp() {
+  const d = new Date();
+  const p = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}`;
+}
+
 document.getElementById("applyBtn").onclick = render;
-document.getElementById("reloadBtn").onclick = reload;
+document.getElementById("shotWish").onclick = () => saveChartImage(CHARTS[0], `许愿数趋势_${stamp()}.png`);
+document.getElementById("shotGrowth").onclick = () => saveChartImage(CHARTS[1], `许愿数增数表_${stamp()}.png`);
 reload();
 </script>
 </body>
