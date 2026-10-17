@@ -172,31 +172,22 @@ async function loadCsv() {
     `已加载 ${t.length} 个时间点 × ${raw.names.length} 人（${fmtLabel(t[0],0)} ~ ${fmtLabel(t[t.length-1],0)}）`;
 }
 
-// 按间隔重采样：时间向下取整到 intervalMin 的桶，每桶取最后一个非空值
-// diff=true 时再对桶序列差分：本桶值 - 前一桶值 = 该间隔新增数（首桶无前值为 null）
+// 按间隔取整点快照：时刻恰为 intervalMin 整数倍的点各成一列（如 1 小时间隔取 14:00、15:00）
+// 最新点不在网格上（如 15:57 时的 15:55）则末尾追加一列实际时刻；恰在网格上则不追加
+// diff=true 时对列序列差分：本列值 - 前一列值 = 该间隔新增数（首列无前值为 null）
 function resample(src, intervalMin, start, end, diff) {
-  const bucketMs = intervalMin * 60000;
-  const idx = [];
+  const colIdx = [];
   for (let i = 0; i < src.times.length; i++) {
     const t = src.times[i];
     if (start && t < start) continue;
     if (end && t > end) continue;
-    idx.push(i);
+    if (t.getTime() % (intervalMin * 60000) === 0) colIdx.push(i);
   }
-  const buckets = new Map(); // bucketStart -> last index
-  for (const i of idx) {
-    const b = Math.floor(src.times[i].getTime() / bucketMs) * bucketMs;
-    buckets.set(b, i);
-  }
-  const keys = [...buckets.keys()].sort((a,b) => a-b);
-  const colIdx = keys.map(k => buckets.get(k)); // 每列对应的数据索引
-  const labels = keys.map(k => fmtLabel(new Date(k), intervalMin));
-  // 每桶已取到桶内最新点；最后桶若为未完成间隔（取到的点晚于桶起点），
-  // 标签改用该点实际时间，使最右侧直接显示最新数据时刻（不追加列，避免增速图出现 当前值-同值 的假0）
-  if (keys.length) {
-    const lastTime = src.times[colIdx[colIdx.length - 1]];
-    if (lastTime.getTime() > keys[keys.length - 1]) labels[labels.length - 1] = fmtLabel(lastTime, 0);
-  }
+  // 最新点非整点时刻时追加（起止过滤不影响"最新"判断，直接用原始序列末尾）
+  const last = src.times.length - 1;
+  if (src.times[last].getTime() % (intervalMin * 60000) !== 0
+      && (!end || src.times[last] <= end)) colIdx.push(last);
+  const labels = colIdx.map(i => fmtLabel(src.times[i], intervalMin));
   const datasets = src.names.map((name, n) => {
     const vals = colIdx.map(i => src.values[name][i]);
     return {
