@@ -207,12 +207,12 @@ function resample(src, intervalMin, start, end, diff) {
   return { labels, datasets };
 }
 
-// 根据数据点数量选默认间隔：5分钟超过40点则升到30分钟，以此类推，最高1天
+// 根据数据点数量选默认间隔：超过48点则升一档，自动升档最高到1小时；1天由用户手动切换
 function pickDefaultInterval() {
-  for (const m of [5, 30, 60, 1440]) {
-    if (resample(raw, m, null, null).labels.length <= 40) return m;
+  for (const m of [5, 30, 60]) {
+    if (resample(raw, m, null, null).labels.length <= 48) return m;
   }
-  return 1440;
+  return 60;
 }
 
 function renderOne(cfg, intervalMin, start, end) {
