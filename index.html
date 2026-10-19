@@ -233,7 +233,12 @@ function renderOne(cfg, intervalMin, start, end) {
       interaction: { mode: "index", intersect: false },
       plugins: {
         legend: { display: false }, // 内置图例禁用，改用标题行 HTML 图例
-        htmlLegend: { containerId: cfg.legendId }
+        htmlLegend: { containerId: cfg.legendId },
+        tooltip: {
+          // 悬停时按许愿数/增量数（当前点数值）从大到小排序；无数据(null)的不显示
+          filter: (item) => item.parsed.y != null && !Number.isNaN(item.parsed.y),
+          itemSort: (a, b) => (b.parsed.y ?? -Infinity) - (a.parsed.y ?? -Infinity)
+        }
       },
       scales: {
         x: { ticks: { autoSkip: true, maxRotation: 45 } }, // E: 仅标签抽稀，数据点仍全量
