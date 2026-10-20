@@ -16,6 +16,7 @@
   select, input[type="datetime-local"] { padding: 6px 10px; border: 1px solid #d0d3dc; border-radius: 6px; font-size: 14px; }
   button { padding: 7px 18px; border: none; border-radius: 6px; background: #6c5ce7; color: #fff; font-size: 14px; cursor: pointer; }
   button:hover { background: #5a4bd1; }
+  button:disabled { background: #b9b3e8; cursor: default; }
   button.ghost { background: #eceafc; color: #6c5ce7; }
   .status { font-size: 13px; color: #999; margin-top: 10px; }
   .chart-box { height: 63vh; overflow-x: auto; display: flex; flex-direction: column; }
@@ -52,17 +53,19 @@
       <input type="datetime-local" id="endTime">
     </div>
     <button id="applyBtn">应用</button>
+    <button class="ghost" id="refreshBtn">刷新数据</button>
     <button class="ghost" id="shotWish">保存趋势图截图</button>
     <button class="ghost" id="shotGrowth">保存增数表截图</button>
+    <button class="ghost" id="shotDaily">保存每日增量图截图</button>
     <button class="ghost" onclick="window.open('/wish_records.csv','_blank')">查看 CSV 原始数据</button>
   </div>
   <div class="status" id="status">正在加载数据…</div>
-  <div class="hint">提示：点击图例可显示/隐藏某人的折线；鼠标悬停可查看具体数值。</div>
+  <div class="hint">提示：前两张图点击图例可显示/隐藏某人的折线；第三张图点击姓名单选某人（默认选择当前票数最高者）；鼠标悬停可查看具体数值。</div>
 </div>
 
 <div class="panel chart-box" id="chartScroll">
   <div class="chart-head">
-    <h2>许愿数趋势</h2>
+    <h2 id="wishTitle">许愿数趋势</h2>
     <ul class="legend" id="legendWish"></ul>
   </div>
   <div class="chart-inner" id="chartInner">
@@ -72,11 +75,24 @@
 
 <div class="panel chart-box" id="growthScroll">
   <div class="chart-head">
-    <h2>许愿数增数表</h2>
+    <h2 id="growthTitle">许愿数增数表</h2>
     <ul class="legend" id="legendGrowth"></ul>
   </div>
   <div class="chart-inner" id="growthInner">
     <canvas id="growthChart"></canvas>
+  </div>
+</div>
+
+<div class="panel chart-box" id="dailyScroll">
+  <div class="chart-head">
+    <h2 id="dailyTitle">每日同时刻票数增量</h2>
+    <ul class="legend" id="legendDaily"></ul>
+  </div>
+  <div class="chart-head">
+    <ul class="legend" id="legendDayColor"></ul>
+  </div>
+  <div class="chart-inner" id="dailyInner">
+    <canvas id="dailyChart"></canvas>
   </div>
 </div>
 
@@ -97,8 +113,8 @@ function colorOf(name, n) { return NAME_COLORS[name] || PALETTE[n % PALETTE.leng
 let raw = { names: [], times: [], values: {} }; // times: Date[], values: name -> number[]（可含 null）
 // 两张图共用一套控件；增速图按当前显示间隔对许愿数差分（本间隔末值 - 前一间隔末值）
 const CHARTS = [
-  { src: () => raw, diff: false, scrollId: "chartScroll",  innerId: "chartInner",  canvasId: "chart",       legendId: "legendWish",   yTitle: "许愿数", inst: null },
-  { src: () => raw, diff: true,  scrollId: "growthScroll", innerId: "growthInner", canvasId: "growthChart", legendId: "legendGrowth", yTitle: m => `新增许愿数（个/${fmtInterval(m)}）`, inst: null },
+  { src: () => raw, diff: false, scrollId: "chartScroll",  innerId: "chartInner",  canvasId: "chart",       legendId: "legendWish",   titleId: "wishTitle",   yTitle: "许愿数", inst: null },
+  { src: () => raw, diff: true,  scrollId: "growthScroll", innerId: "growthInner", canvasId: "growthChart", legendId: "legendGrowth", titleId: "growthTitle", yTitle: m => `新增许愿数（个/${fmtInterval(m)}）`, inst: null },
 ];
 
 // HTML 图例插件：canvas 被拉宽横滚时内置图例会居中跑出可视区，
@@ -215,6 +231,219 @@ function pickDefaultInterval() {
   return 60;
 }
 
+// ===== 第三张图：每日同时刻票数增量 =====
+// X 轴 = 一天内的时刻；每人每天一条线，可跨天比对「同一时刻」
+// 单选某人 → 其各日曲线高亮，其余人的曲线淡化
+// 显示间隔受统一控件控制，但选「1 天」时本图最高按 1 小时显示
+const DAILY = { scrollId: "dailyScroll", innerId: "dailyInner", canvasId: "dailyChart", pickerId: "legendDaily", legendColorId: "legendDayColor", titleId: "dailyTitle", inst: null, person: null };
+const DAILY_TITLE = "每日同时刻票数增量";
+
+function fmtDay(d) { const p = n => String(n).padStart(2, "0"); return `${p(d.getMonth()+1)}-${p(d.getDate())}`; }
+function fmtHM(d) { const p = n => String(n).padStart(2, "0"); return `${p(d.getHours())}:${p(d.getMinutes())}`; }
+// 色阶档数固定写死为 15（活动 10/15~10/29 共 15 天），不随实际数据量缩放
+const DAY_SLOTS = 15;
+// 未选中者的所有曲线统一用淡灰，不再按人/按天派生淡色（避免与浅色档、与背景混淆）
+const FADED_GRAY = "rgba(190,194,200,0.6)";
+
+function hexToHsl(hex) {
+  const v = parseInt(hex.replace("#", ""), 16);
+  const r = ((v >> 16) & 255) / 255, g = ((v >> 8) & 255) / 255, b = (v & 255) / 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+  let h = 0;
+  if (d) {
+    if (mx === r) h = ((g - b) / d) % 6;
+    else if (mx === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h *= 60; if (h < 0) h += 360;
+  }
+  const l = (mx + mn) / 2;
+  const s = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1));
+  return [h, s * 100, l * 100];
+}
+
+// 由主色派生固定 15 档色阶：明度大幅拉开(±35) + 色相小幅偏移(±12°) 以增强区分度，
+// 饱和度与主色调保持不变。slot 0 最亮 → slot 14 最暗
+function dayRgba(hex, slot, a) {
+  const [h, s] = hexToHsl(hex);
+  const t = slot / (DAY_SLOTS - 1);                            // 0 .. 1
+  const h2 = (h + (t - 0.5) * 24 + 360) % 360;                 // 色相 ±12°
+  // 明度统一取绝对区间 86%→16%（每档 5%），不随主色深浅浮动：
+  // 否则深色主色(如火树 #8B0000)向下溢出会被钳制，最暗数档挤成同色
+  const l2 = 86 - t * 70;
+  return `hsla(${Math.round(h2)},${Math.round(s)}%,${Math.round(l2)}%,${a})`;
+}
+
+// 把实际第 i 天(共 k 天)映射到固定 15 档色阶位置：天数少时也均匀铺满整条色阶
+function daySlot(i, k) {
+  return k <= 1 ? 0 : Math.round(i * (DAY_SLOTS - 1) / (k - 1));
+}
+
+// 当前总票数最高的人：直接比较总票数表最后一列（累计值单调不减，末列即当前总票数）
+// 并列时保留靠前者；单元格万一为空按 -1 处理，不会被误选为第一
+function topScorer(src) {
+  const last = src.times.length - 1;
+  return src.names.reduce((a, b) =>
+    (src.values[b][last] ?? -1) > (src.values[a][last] ?? -1) ? b : a);
+}
+
+function controlValues() {
+  const intervalMin = +document.getElementById("interval").value;
+  const sv = document.getElementById("startTime").value;
+  const ev = document.getElementById("endTime").value;
+  return { intervalMin, start: sv ? new Date(sv) : null, end: ev ? new Date(ev) : null };
+}
+
+// 把时序列按「天 + 时刻」重组：X=时刻，series=[{name, ni, day, data}]
+// 只取间隔对齐列，保证各天「同一时刻」口径一致可比（不追加最新非整点）
+function resampleDaily(src, intervalMin, start, end) {
+  const colIdx = [];
+  for (let i = 0; i < src.times.length; i++) {
+    const t = src.times[i];
+    if (start && t < start) continue;
+    if (end && t > end) continue;
+    if (t.getTime() % (intervalMin * 60000) === 0) colIdx.push(i);
+  }
+  if (!colIdx.length) return { labels: [], days: [], series: [] };
+
+  const pos = new Map(), daySet = new Set(), timeSet = new Set();
+  colIdx.forEach((ci, k) => {
+    const t = src.times[ci], d = fmtDay(t), hm = fmtHM(t);
+    pos.set(d + "|" + hm, k);
+    daySet.add(d); timeSet.add(hm);
+  });
+  const days = [...daySet].sort(), labels = [...timeSet].sort();
+
+  // 每人沿选中列顺序求增量（首列无前值 → null）
+  const inc = {};
+  for (const name of src.names) {
+    inc[name] = colIdx.map((ci, k) => {
+      if (k === 0) return null;
+      const cur = src.values[name][ci], prev = src.values[name][colIdx[k-1]];
+      return (cur == null || prev == null) ? null : cur - prev;
+    });
+  }
+
+  const series = [];
+  src.names.forEach((name, ni) => {
+    days.forEach((day, di) => {
+      series.push({ name, ni, day, di, data: labels.map(hm => {
+        const k = pos.get(day + "|" + hm);
+        return k === undefined ? null : inc[name][k];
+      }) });
+    });
+  });
+  return { labels, days, series };
+}
+
+function renderDaily(intervalMin, start, end) {
+  const eff = Math.min(intervalMin, 60); // 统一控件选「1 天」时，本图最高按 1 小时显示
+  const src = raw;
+  const data = resampleDaily(src, eff, start, end);
+  if (!src.names.includes(DAILY.person)) DAILY.person = topScorer(src) || src.names[0] || null;
+  const sel = DAILY.person;
+  DAILY.days = data.days;
+  // 标题带上当前选中者：本图是单选视角，标题不明示人物容易看错
+  const titleEl = document.getElementById(DAILY.titleId);
+  if (titleEl) titleEl.textContent = sel ? `${DAILY_TITLE} -- ${sel}` : DAILY_TITLE;
+
+  if (DAILY.inst) DAILY.inst.destroy();
+  const scroll = document.getElementById(DAILY.scrollId);
+  document.getElementById(DAILY.innerId).style.width =
+    Math.max(scroll.clientWidth - 40, data.labels.length * 28) + "px";
+
+  const dayCount = data.days.length;
+  const datasets = data.series.map(s => {
+    const base = colorOf(s.name, s.ni), active = s.name === sel;
+    const col = active ? dayRgba(base, daySlot(s.di, dayCount), 0.95) : FADED_GRAY;
+    return {
+      label: s.day,
+      data: s.data,
+      borderColor: col,
+      backgroundColor: col,
+      borderWidth: active ? 2 : 1,
+      spanGaps: true,
+      tension: 0,
+      pointRadius: 0,
+      pointHitRadius: 8,
+      // 悬停时只在被选中的线上画点：mode:index 会激活全部曲线，
+      // 若不区分，淡化线也会因 pointHoverRadius 默认值冒出圆点
+      pointHoverRadius: active ? 4 : 0,
+      pointHoverBorderWidth: active ? 1 : 0,
+      _person: s.name,
+    };
+  });
+
+  DAILY.inst = new Chart(document.getElementById(DAILY.canvasId), {
+    type: "line",
+    data: { labels: data.labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      // 切换人物是整图重建，默认补间会让 人数×天数 条曲线（连同淡灰线）一起动一遍，
+      // 既拖沓又晃眼；单选视角下换人应当即时生效
+      animation: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          // 只显示被选中的那个人：该时刻「每天」的票数增量
+          filter: (item) => item.dataset._person === sel && item.parsed.y != null,
+          itemSort: (a, b) => (b.parsed.y ?? -Infinity) - (a.parsed.y ?? -Infinity),
+          callbacks: { title: (items) => (items.length ? "时刻 " + items[0].label : "") }
+        }
+      },
+      scales: {
+        x: { ticks: { autoSkip: true, maxRotation: 45 } },
+        y: { title: { display: true, text: `票数增量（个/${fmtInterval(eff)}）` } }
+      }
+    }
+  });
+  renderDailyPicker();
+  renderDayLegend();
+}
+
+// 人物单选器：选中者正常显示，其余划掉淡化
+function renderDailyPicker() {
+  const ul = document.getElementById(DAILY.pickerId);
+  if (!ul) return;
+  while (ul.firstChild) ul.firstChild.remove();
+  raw.names.forEach((name, n) => {
+    const li = document.createElement("li");
+    if (name !== DAILY.person) li.classList.add("hidden");
+    const box = document.createElement("span");
+    box.className = "box";
+    box.style.background = colorOf(name, n);
+    const text = document.createElement("span");
+    text.textContent = name;
+    li.append(box, text);
+    li.onclick = () => {
+      DAILY.person = name;
+      const c = controlValues();
+      renderDaily(c.intervalMin, c.start, c.end);
+    };
+    ul.appendChild(li);
+  });
+}
+
+// 日期色图例：列出当前选中者「每天」对应的颜色（由主色派生的亮→暗梯度）
+function renderDayLegend() {
+  const ul = document.getElementById(DAILY.legendColorId);
+  if (!ul) return;
+  while (ul.firstChild) ul.firstChild.remove();
+  const days = DAILY.days || [];
+  const base = colorOf(DAILY.person, raw.names.indexOf(DAILY.person));
+  days.forEach((d, i) => {
+    const li = document.createElement("li");
+    const box = document.createElement("span");
+    box.className = "box";
+    box.style.background = dayRgba(base, daySlot(i, days.length), 1);
+    const text = document.createElement("span");
+    text.textContent = d;
+    li.append(box, text);
+    ul.appendChild(li);
+  });
+}
+
 function renderOne(cfg, intervalMin, start, end) {
   const data = resample(cfg.src(), intervalMin, start, end, cfg.diff);
   if (cfg.inst) cfg.inst.destroy();
@@ -249,12 +478,9 @@ function renderOne(cfg, intervalMin, start, end) {
 }
 
 function render() {
-  const intervalMin = +document.getElementById("interval").value;
-  const sv = document.getElementById("startTime").value;
-  const ev = document.getElementById("endTime").value;
-  const start = sv ? new Date(sv) : null;
-  const end = ev ? new Date(ev) : null;
+  const { intervalMin, start, end } = controlValues();
   for (const cfg of CHARTS) renderOne(cfg, intervalMin, start, end);
+  renderDaily(intervalMin, start, end);
 }
 
 async function reload() {
@@ -268,26 +494,87 @@ async function reload() {
   }
 }
 
-// 导出图表完整 PNG：临时把内置图例画入 canvas（HTML 图例不在 canvas 内），
-// 白底合成后下载，随后恢复页面原状；导出的是完整宽度，不受横向滚动影响
-function saveChartImage(cfg, filename) {
-  const chart = cfg.inst;
-  chart.options.plugins.legend.display = true;
-  chart.update("none");
-  const src = document.getElementById(cfg.canvasId);
+// 刷新：只重新拉取 CSV 并重绘。刻意不用 location.reload()——整页刷新会把用户
+// 当前选的间隔、起止时间、第三张图选中的人全部重置；loadOne 带 ?_= 时间戳，能拿到新数据
+async function refresh() {
+  const btn = document.getElementById("refreshBtn");
+  btn.disabled = true;
+  btn.textContent = "刷新中…";
+  try {
+    await loadCsv();   // 成功后状态栏由 loadCsv 自己更新为「已加载 N 个时间点…」
+    render();
+  } catch (e) {
+    document.getElementById("status").textContent =
+      "刷新失败：" + e.message + "。数据每 5 分钟更新一次，请稍后重试。";
+  } finally {
+    btn.textContent = "刷新数据";
+    btn.disabled = false;
+  }
+}
+
+// 导出图表 PNG：折线图透明底直接保存会变成黑块，故先铺白底；
+// 页面上的标题与图例都是 HTML 元素、不在 canvas 内，所以把标题手绘到导出图顶部。
+// 导出的是完整宽度，不受横向滚动影响
+function exportChart(src, titleId) {
+  const dpr = window.devicePixelRatio || 1;   // canvas 是物理像素，标题条需按同一比例放大
+  const bar = Math.round(40 * dpr);
   const out = document.createElement("canvas");
   out.width = src.width;
-  out.height = src.height;
+  out.height = src.height + bar;
   const ctx = out.getContext("2d");
   ctx.fillStyle = "#fff";
   ctx.fillRect(0, 0, out.width, out.height);
-  ctx.drawImage(src, 0, 0);
+  ctx.fillStyle = "#333";
+  ctx.font = `600 ${Math.round(16 * dpr)}px "Microsoft YaHei", system-ui, sans-serif`;
+  ctx.textBaseline = "middle";
+  // 靠左绘制：超宽画布下居中标题会跑到图片中段、一眼看不到
+  ctx.fillText(titleOf(titleId), Math.round(14 * dpr), bar / 2);
+  ctx.drawImage(src, 0, bar);
   const a = document.createElement("a");
   a.href = out.toDataURL("image/png");
-  a.download = filename;
+  a.download = `${fnameOf(titleId)}_${stamp()}.png`;
   a.click();
+}
+
+function saveChartImage(cfg) {
+  const chart = cfg.inst;
+  chart.options.plugins.legend.display = true;
+  chart.update("none");
+  exportChart(document.getElementById(cfg.canvasId), cfg.titleId);
   chart.options.plugins.legend.display = false;
   chart.update("none");
+}
+
+// 第三张图的 dataset 是「人数 × 天数」，直接开内置图例会列出全部组合（N×M 条），
+// 故保存时只保留当前选中者的「每天」条目，与图下方日期色图例保持一致
+function saveDailyImage() {
+  const chart = DAILY.inst;
+  if (!chart) return;
+  const sel = DAILY.person;
+  const legend = chart.options.plugins.legend;
+  // 解析后的 options 未必自带 labels 子对象，按需补建、用完撤销
+  const created = !legend.labels;
+  const labels = created ? (legend.labels = {}) : legend.labels;
+  const prevFilter = labels.filter;
+  // 只列当前选中者的「每天」：否则会列出 人数×天数 条，且未选中者全为同一灰色、无从分辨
+  labels.filter = item => chart.data.datasets[item.datasetIndex]._person === sel;
+  legend.display = true;
+  chart.update("none");
+  exportChart(document.getElementById(DAILY.canvasId), DAILY.titleId);
+  legend.display = false;
+  if (prevFilter === undefined) delete labels.filter; else labels.filter = prevFilter;
+  if (created) delete legend.labels;
+  chart.update("none");
+}
+
+// 截图标题与文件名统一取自页面上的图表标题：三张图共用同一来源，改标题即同时改名
+function titleOf(titleId) {
+  const el = document.getElementById(titleId);
+  return el ? el.textContent.trim() : "";
+}
+function fnameOf(titleId) {
+  // 第三张图标题含「 -- 文韬」，转成下划线，避免文件名里出现空格与连续连字符
+  return titleOf(titleId).replace(/\s*--\s*/g, "_") || "图表";
 }
 
 function stamp() {
@@ -297,8 +584,10 @@ function stamp() {
 }
 
 document.getElementById("applyBtn").onclick = render;
-document.getElementById("shotWish").onclick = () => saveChartImage(CHARTS[0], `许愿数趋势_${stamp()}.png`);
-document.getElementById("shotGrowth").onclick = () => saveChartImage(CHARTS[1], `许愿数增数表_${stamp()}.png`);
+document.getElementById("refreshBtn").onclick = refresh;
+document.getElementById("shotWish").onclick = () => saveChartImage(CHARTS[0]);
+document.getElementById("shotGrowth").onclick = () => saveChartImage(CHARTS[1]);
+document.getElementById("shotDaily").onclick = saveDailyImage;
 reload();
 </script>
 </body>
