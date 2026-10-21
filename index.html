@@ -370,6 +370,7 @@ function renderDaily(intervalMin, start, end) {
       pointHoverRadius: active ? 4 : 0,
       pointHoverBorderWidth: active ? 1 : 0,
       _person: s.name,
+      _di: s.di,   // 天数序号，供 tooltip 按时间先后排序
     };
   });
 
@@ -388,7 +389,9 @@ function renderDaily(intervalMin, start, end) {
         tooltip: {
           // 只显示被选中的那个人：该时刻「每天」的票数增量
           filter: (item) => item.dataset._person === sel && item.parsed.y != null,
-          itemSort: (a, b) => (b.parsed.y ?? -Infinity) - (a.parsed.y ?? -Infinity),
+          // 按天序号（即时间先后，早→晚）排序，而非按增量大小——跨天对比时
+          // 顺序随数值跳动会看不出趋势
+          itemSort: (a, b) => (a.dataset._di ?? 0) - (b.dataset._di ?? 0),
           callbacks: { title: (items) => (items.length ? "时刻 " + items[0].label : "") }
         }
       },
