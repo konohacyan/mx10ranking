@@ -10,7 +10,12 @@
   body { font-family: "Microsoft YaHei", system-ui, sans-serif; background: #f5f6fa; padding: 20px; color: #333; }
   h1 { font-size: 20px; margin-bottom: 16px; }
   .panel { background: #fff; border-radius: 10px; padding: 16px 20px; box-shadow: 0 1px 4px rgba(0,0,0,.08); margin-bottom: 16px; }
-  .controls { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end; }
+  .controls { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: flex-end; }
+  /* 按功能分组：竖线分隔 + 小标签，避免十来个按钮连成一片 */
+  .group { display: flex; flex-direction: column; gap: 6px; padding-left: 18px; border-left: 2px solid #edeff5; }
+  .group:first-child { padding-left: 0; border-left: none; }
+  .group-title { font-size: 11px; color: #8a8fa0; background: #f2f3f8; border-radius: 4px; padding: 2px 7px; align-self: flex-start; }
+  .group-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
   .field { display: flex; flex-direction: column; gap: 4px; }
   .field label { font-size: 12px; color: #888; }
   select, input[type="datetime-local"] { padding: 6px 10px; border: 1px solid #d0d3dc; border-radius: 6px; font-size: 14px; }
@@ -18,6 +23,9 @@
   button:hover { background: #5a4bd1; }
   button:disabled { background: #b9b3e8; cursor: default; }
   button.ghost { background: #eceafc; color: #6c5ce7; }
+  /* ghost 按钮的禁用态要单独写：button.ghost 与 button:disabled 优先级相同且写在后面，
+     会把通用禁用样式盖掉，导致「显示全部数据」在 1 天档置灰后看起来跟正常一样 */
+  button.ghost:disabled { background: #e9eaf2; color: #b6bac9; cursor: default; }
   .status { font-size: 13px; color: #999; margin-top: 10px; }
   .chart-box { height: 63vh; overflow-x: auto; display: flex; flex-direction: column; }
   .chart-inner { flex: 1; min-height: 0; min-width: 100%; }
@@ -35,32 +43,55 @@
 
 <div class="panel">
   <div class="controls">
-    <div class="field">
-      <label>显示间隔</label>
-      <select id="interval">
-        <option value="5">5 分钟</option>
-        <option value="30">30 分钟</option>
-        <option value="60">1 小时</option>
-        <option value="1440">1 天</option>
-      </select>
+    <div class="group">
+      <span class="group-title">时间范围</span>
+      <div class="group-row">
+        <div class="field">
+          <label>显示间隔</label>
+          <select id="interval">
+            <option value="5">5 分钟</option>
+            <option value="30">30 分钟</option>
+            <option value="60">1 小时</option>
+            <option value="1440">1 天</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>起始时间（留空 = 最早数据）</label>
+          <input type="datetime-local" id="startTime">
+        </div>
+        <div class="field">
+          <label>结束时间（留空 = 最新数据）</label>
+          <input type="datetime-local" id="endTime">
+        </div>
+        <button id="applyBtn">应用</button>
+      </div>
     </div>
-    <div class="field">
-      <label>起始时间（留空 = 最早数据）</label>
-      <input type="datetime-local" id="startTime">
+    <div class="group">
+      <span class="group-title">数据</span>
+      <div class="group-row">
+        <button class="ghost" id="refreshBtn">刷新数据</button>
+        <button class="ghost" onclick="window.open('/wish_records.csv','_blank')">下载原始数据</button>
+      </div>
     </div>
-    <div class="field">
-      <label>结束时间（留空 = 最新数据）</label>
-      <input type="datetime-local" id="endTime">
+    <div class="group">
+      <span class="group-title">显示范围</span>
+      <div class="group-row">
+        <button class="ghost" id="expandBtn">展开折叠</button>
+      </div>
     </div>
-    <button id="applyBtn">应用</button>
-    <button class="ghost" id="refreshBtn">刷新数据</button>
-    <button class="ghost" id="shotWish">保存趋势图截图</button>
-    <button class="ghost" id="shotGrowth">保存增数表截图</button>
-    <button class="ghost" id="shotDaily">保存每日增量图截图</button>
-    <button class="ghost" onclick="window.open('/wish_records.csv','_blank')">查看 CSV 原始数据</button>
+    <div class="group">
+      <span class="group-title">导出截图</span>
+      <div class="group-row">
+        <button class="ghost" id="shotWish">趋势图</button>
+        <button class="ghost" id="shotGrowth">增数图</button>
+        <button class="ghost" id="shotDaily">每日增量图</button>
+      </div>
+    </div>
   </div>
-  <div class="status" id="status">正在加载数据…</div>
-  <div class="hint">提示：前两张图点击图例可显示/隐藏某人的折线；第三张图点击姓名单选某人（默认选择当前票数最高者）；鼠标悬停可查看具体数值。</div>
+  <div class="status"><span id="status">正在加载数据…</span><span id="rangeNote"></span></div>
+  <div class="hint">提示：点击图例可显示/隐藏某人的折线；图三点击姓名单选某人（默认选择当前票数最高者）；鼠标悬停可查看具体数值。</div>
+  <div class="hint">意见反馈邮箱：KonohaCyan@163.com</div>
+
 </div>
 
 <div class="panel chart-box" id="chartScroll">
@@ -117,6 +148,27 @@ const CHARTS = [
   { src: () => raw, diff: true,  scrollId: "growthScroll", innerId: "growthInner", canvasId: "growthChart", legendId: "legendGrowth", titleId: "growthTitle", yTitle: m => `新增许愿数（个/${fmtInterval(m)}）`, inst: null },
 ];
 
+// 前两张图默认只渲染近 RECENT_DAYS 天：数据量上来后「列数 × 人数」的点数与画布宽度同步膨胀，
+// 渲染和悬停都会变卡；更早的数据折叠起来，需要时由用户点「显示全部数据」展开。
+// 第三张图按「时刻 × 天数」聚合、点数与时区分辨率绑定，不受此开关影响
+const RECENT_DAYS = 3;
+let showAllRange = false;
+
+// 折叠起点：以「所选结束时间」为锚往前推 RECENT_DAYS 天；未设结束时间则以最新数据为准
+function recentSince(src, end) {
+  const last = src.times[src.times.length - 1];
+  const anchor = end && end < last ? end : last;
+  return new Date(anchor.getTime() - RECENT_DAYS * 86400000);
+}
+
+// 本图这次渲染要不要折叠：返回 null 表示画全量。
+// 两种不折叠的情况 —— 用户已点「显示全部数据」；
+// 以及 1 天档（一天只有一列、总列数本就很少，再折叠会凭空多出一列隔断，毫无意义）
+function foldSince(intervalMin, src, end) {
+  if (showAllRange || intervalMin >= 1440) return null;
+  return recentSince(src, end);
+}
+
 // HTML 图例插件：canvas 被拉宽横滚时内置图例会居中跑出可视区，
 // 故将图例渲染到标题行的 <ul>，固定可见；点击可隐藏/显示对应折线
 const htmlLegend = {
@@ -140,6 +192,56 @@ const htmlLegend = {
       };
       ul.appendChild(li);
     }
+  }
+};
+
+// 折叠标记：在「⋯ 折叠 N 列」那一列上画淡紫阴影块 + 左右竖虚线 + 顶部文字标注，
+// 让被折叠的部分是一个可视的「区域」，而不是轴上一行不显眼的小字。
+// 阴影放在 beforeDatasetsDraw（盖过网格线、位于折线之下），文字与虚线放在 afterDraw（最上层）。
+// 只挂在前两张图：第三张图没有这种折叠结构
+const foldMarker = {
+  id: "foldMarker",
+  beforeDatasetsDraw(chart) {
+    const idx = chart.data.labels.findIndex(l => typeof l === "string" && l.includes("折叠"));
+    if (idx < 0) return;
+    const { ctx, chartArea, scales } = chart;
+    const x = scales.x.getPixelForValue(idx);
+    const w = Math.max(24, (scales.x.getPixelForValue(idx + 1) ?? x) - x); // 一格的像素宽
+    ctx.save();
+    ctx.fillStyle = "rgba(108, 92, 231, 0.07)";
+    ctx.fillRect(x - w / 2, chartArea.top, w, chartArea.bottom - chartArea.top);
+    ctx.restore();
+  },
+  afterDraw(chart) {
+    const idx = chart.data.labels.findIndex(l => typeof l === "string" && l.includes("折叠"));
+    if (idx < 0) return;
+    const { ctx, chartArea, scales } = chart;
+    const x = scales.x.getPixelForValue(idx);
+    const w = Math.max(24, (scales.x.getPixelForValue(idx + 1) ?? x) - x);
+    ctx.save();
+    // 左右两条竖虚线，圈出被折叠的格子
+    ctx.strokeStyle = "rgba(108, 92, 231, 0.45)";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    for (const xx of [x - w / 2, x + w / 2]) {
+      ctx.beginPath();
+      ctx.moveTo(xx, chartArea.top);
+      ctx.lineTo(xx, chartArea.bottom);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    // 文字放绘图区顶部，垫一块白色半透明底，避免被折线压住看不清
+    const label = chart.data.labels[idx];
+    ctx.font = '600 12px "Microsoft YaHei", system-ui, sans-serif';
+    const tw = ctx.measureText(label).width;
+    const pad = 6, ty = chartArea.top + 6;
+    ctx.fillStyle = "rgba(255, 255, 255, 0.88)";
+    ctx.fillRect(x - tw / 2 - pad, ty - 2, tw + pad * 2, 19);
+    ctx.fillStyle = "#6c5ce7";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    ctx.fillText(label, x, ty);
+    ctx.restore();
   }
 };
 
@@ -185,13 +287,14 @@ async function loadCsv() {
   raw = await loadOne(CSV_WISH);
   const t = raw.times;
   document.getElementById("status").textContent =
-    `已加载 ${t.length} 个时间点 × ${raw.names.length} 人（${fmtLabel(t[0],0)} ~ ${fmtLabel(t[t.length-1],0)}）`;
+    `数据加载完毕 （${fmtLabel(t[0],0)} ~ ${fmtLabel(t[t.length-1],0)}）`;
 }
 
 // 按间隔取整点快照：时刻恰为 intervalMin 整数倍的点各成一列（如 1 小时间隔取 14:00、15:00）
 // 最新点不在网格上（如 15:57 时的 15:55）则末尾追加一列实际时刻；恰在网格上则不追加
 // diff=true 时对列序列差分：本列值 - 前一列值 = 该间隔新增数（首列无前值为 null）
-function resample(src, intervalMin, start, end, diff) {
+// since 非空时只返回该时刻之后的一段（详见末尾的折叠处理）
+function resample(src, intervalMin, start, end, diff, since) {
   const colIdx = [];
   for (let i = 0; i < src.times.length; i++) {
     const t = src.times[i];
@@ -220,7 +323,23 @@ function resample(src, intervalMin, start, end, diff) {
       borderWidth: 2,
     };
   });
-  return { labels, datasets };
+  if (!since) return { labels, datasets };
+  // 折叠必须放在差分「之后」：若先裁掉早期数据再求差分，视图首列的增量会因为缺少
+  // 前一列而变成 null，增数图开头会出现一段空白。全量算完再截，首列仍带真实增量。
+  // 折叠后 =「最早一列」+ 隔断列 +「近端若干列」：中间的列真的丢掉，用一列全 null
+  // 的隔断在 X 轴上标出「⋯ 折叠 N 列」；因 spanGaps 为 true，线段会跨过隔断连到近端，
+  // 那条跨度的长直线 + 隔断标签，让「这里有数据被折叠」一眼可见
+  let cut = 0;
+  while (cut < colIdx.length - 2 && src.times[colIdx[cut]] < since) cut++;
+  // 趋势图取第 0 列（原始值本身有值）；增数图第 0 列恒为 null（首列无前值），改取第 1 列，
+  // 否则「最老的一列」取不到具体内容（pointRadius 为 0，孤立点根本看不见）
+  const head = diff ? 1 : 0;
+  if (cut <= head + 1) return { labels, datasets }; // 中间没有可折叠的列
+  const folded = cut - head - 1;
+  return {
+    labels: [labels[head], `⋯ 折叠 ${folded} 列`, ...labels.slice(cut)],
+    datasets: datasets.map(d => ({ ...d, data: [d.data[head], null, ...d.data.slice(cut)] })),
+  };
 }
 
 // 根据数据点数量选默认间隔：超过48点则升一档，自动升档最高到1小时；1天由用户手动切换
@@ -448,7 +567,8 @@ function renderDayLegend() {
 }
 
 function renderOne(cfg, intervalMin, start, end) {
-  const data = resample(cfg.src(), intervalMin, start, end, cfg.diff);
+  const since = foldSince(intervalMin, cfg.src(), end);
+  const data = resample(cfg.src(), intervalMin, start, end, cfg.diff, since);
   if (cfg.inst) cfg.inst.destroy();
   // 不抽稀：每个点约 28px，超出宽度时容器横向滚动
   // 28px 使全量 5 分钟数据的 canvas 物理宽度保持在 GPU 上限内，避免回退 CPU 渲染卡顿
@@ -458,7 +578,7 @@ function renderOne(cfg, intervalMin, start, end) {
   cfg.inst = new Chart(document.getElementById(cfg.canvasId), {
     type: "line",
     data,
-    plugins: [htmlLegend],
+    plugins: [htmlLegend, foldMarker],
     options: {
       responsive: true,
       maintainAspectRatio: false,
@@ -484,6 +604,30 @@ function render() {
   const { intervalMin, start, end } = controlValues();
   for (const cfg of CHARTS) renderOne(cfg, intervalMin, start, end);
   renderDaily(intervalMin, start, end);
+  // updateRangeNote();
+}
+
+// 状态栏尾部标出前两张图当前的时间范围与数据量，并同步展开按钮的文案
+function updateRangeNote() {
+  const note = document.getElementById("rangeNote");
+  const btn = document.getElementById("expandBtn");
+  if (!note || !btn || !CHARTS[0].inst) return;
+  const labels = CHARTS[0].inst.data.labels;
+  const cols = labels.length;
+  const people = raw.names.length;
+  // 折叠是否真的生效，以「X 轴上出现了隔断列」为准，而不是单看开关：
+  // 1 天档、或数据本身不足 3 天时都不会折叠
+  const folded = labels.some(l => typeof l === "string" && l.includes("折叠"));
+  const dayStep = +document.getElementById("interval").value >= 1440;
+  btn.disabled = dayStep; // 1 天档无需折叠，按钮此时点了也没意义，直接禁用
+  btn.title = dayStep ? "1 天档本身就是一天一列，无需折叠" : "";
+  btn.textContent = folded ? "展开折叠" : `仅显示近 ${RECENT_DAYS} 天`;
+  const head = `　前两张图：${cols} 个时间点 × ${people} 人`;
+  // 列数上万时 Chart.js 掉帧明显，全量展开后给个预警
+  note.textContent = folded
+    ? `${head}（最早一列 + 近 ${RECENT_DAYS} 天，中间已折叠）`
+    : dayStep ? `${head}（1 天档，无需折叠）`
+    : `${head}${cols > 2000 ? "（数据量较大，可能卡顿）" : ""}`;
 }
 
 async function reload() {
@@ -588,6 +732,7 @@ function stamp() {
 
 document.getElementById("applyBtn").onclick = render;
 document.getElementById("refreshBtn").onclick = refresh;
+document.getElementById("expandBtn").onclick = () => { showAllRange = !showAllRange; render(); };
 document.getElementById("shotWish").onclick = () => saveChartImage(CHARTS[0]);
 document.getElementById("shotGrowth").onclick = () => saveChartImage(CHARTS[1]);
 document.getElementById("shotDaily").onclick = saveDailyImage;
