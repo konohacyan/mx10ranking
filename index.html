@@ -454,6 +454,13 @@ function resampleDaily(src, intervalMin, start, end) {
   return { labels, days, series };
 }
 
+// 一条线里「最后一个有值的点」的下标。本图 X 轴是时刻，当天还没走到的时刻全是 null，
+// 直接取 length-1 会把圆点画在空处，必须往回找
+function lastValueIndex(arr) {
+  for (let i = arr.length - 1; i >= 0; i--) if (arr[i] != null) return i;
+  return -1;
+}
+
 function renderDaily(intervalMin, start, end) {
   const eff = Math.min(intervalMin, 60); // 统一控件选「1 天」时，本图最高按 1 小时显示
   const src = raw;
@@ -474,6 +481,11 @@ function renderDaily(intervalMin, start, end) {
   const datasets = data.series.map(s => {
     const base = colorOf(s.name, s.ni), active = s.name === sel;
     const col = active ? dayRgba(base, daySlot(s.di, dayCount), 0.95) : FADED_GRAY;
+    // 线尾常年在 X 轴最右侧之外（当天只走到当前时刻），不画点的话
+    // 一眼看不出「这条线到哪儿为止」，所以末端固定给一个实心圆点做锚点；
+    // 最新一天（days 升序，下标最大的那条）再放大一圈，用来定位真正的「最新数据」
+    const tip = lastValueIndex(s.data);
+    const isNewest = s.di === dayCount - 1;
     return {
       label: s.day,
       data: s.data,
@@ -482,11 +494,16 @@ function renderDaily(intervalMin, start, end) {
       borderWidth: active ? 2 : 1,
       spanGaps: true,
       tension: 0,
-      pointRadius: 0,
+      // 只对选中者的线画点：未选中者是淡灰背景线，逐条画点会糊成一片
+      pointRadius: (ctx) => (active && ctx.dataIndex === tip ? (isNewest ? 5 : 3.5) : 0),
+      pointBackgroundColor: col,
+      pointBorderColor: "#fff",
+      pointBorderWidth: (ctx) => (active && ctx.dataIndex === tip ? 1.5 : 0),
       pointHitRadius: 8,
       // 悬停时只在被选中的线上画点：mode:index 会激活全部曲线，
       // 若不区分，淡化线也会因 pointHoverRadius 默认值冒出圆点
-      pointHoverRadius: active ? 4 : 0,
+      // 悬停半径不小于末端锚点（5）的圆点，否则鼠标移上去锚点反而缩小
+      pointHoverRadius: active ? 5 : 0,
       pointHoverBorderWidth: active ? 1 : 0,
       _person: s.name,
       _di: s.di,   // 天数序号，供 tooltip 按时间先后排序
@@ -604,30 +621,29 @@ function render() {
   const { intervalMin, start, end } = controlValues();
   for (const cfg of CHARTS) renderOne(cfg, intervalMin, start, end);
   renderDaily(intervalMin, start, end);
-  // updateRangeNote();
+  updateRangeNote(); // 刷新展开按钮的文案与可用状态（此前被注释掉，导致按钮点了没反应）
 }
 
-// 状态栏尾部标出前两张图当前的时间范围与数据量，并同步展开按钮的文案
+// 状态栏尾部标出前两张图当前的显示范围（折叠 / 全量），并同步展开按钮的文案
 function updateRangeNote() {
   const note = document.getElementById("rangeNote");
   const btn = document.getElementById("expandBtn");
   if (!note || !btn || !CHARTS[0].inst) return;
   const labels = CHARTS[0].inst.data.labels;
   const cols = labels.length;
-  const people = raw.names.length;
   // 折叠是否真的生效，以「X 轴上出现了隔断列」为准，而不是单看开关：
   // 1 天档、或数据本身不足 3 天时都不会折叠
   const folded = labels.some(l => typeof l === "string" && l.includes("折叠"));
   const dayStep = +document.getElementById("interval").value >= 1440;
   btn.disabled = dayStep; // 1 天档无需折叠，按钮此时点了也没意义，直接禁用
   btn.title = dayStep ? "1 天档本身就是一天一列，无需折叠" : "";
-  btn.textContent = folded ? "展开折叠" : `仅显示近 ${RECENT_DAYS} 天`;
-  const head = `　前两张图：${cols} 个时间点 × ${people} 人`;
+  btn.textContent = folded ? "展开折叠" : `仅展示近 ${RECENT_DAYS} 天数据`;
+  // 状态栏文案只讲「显示范围」这件事；时间点和人数由左侧 #status 自己说，这里不再重复
   // 列数上万时 Chart.js 掉帧明显，全量展开后给个预警
   note.textContent = folded
-    ? `${head}（最早一列 + 近 ${RECENT_DAYS} 天，中间已折叠）`
-    : dayStep ? `${head}（1 天档，无需折叠）`
-    : `${head}${cols > 2000 ? "（数据量较大，可能卡顿）" : ""}`;
+    ? `　（已折叠：最早一列 + 近 ${RECENT_DAYS} 天）`
+    : dayStep ? "　（1 天档，无需折叠）"
+    : `　（已展开全部数据${cols > 2000 ? "，数据量较大可能卡顿" : ""}）`;
 }
 
 async function reload() {
@@ -731,6 +747,8 @@ function stamp() {
 }
 
 document.getElementById("applyBtn").onclick = render;
+// 注意：按钮状态只在点「应用」（或刷新、展开）后随 render() 一起更新，
+// 刻意不给 interval 绑 onchange——下拉框一改就变会让用户以为已经生效了
 document.getElementById("refreshBtn").onclick = refresh;
 document.getElementById("expandBtn").onclick = () => { showAllRange = !showAllRange; render(); };
 document.getElementById("shotWish").onclick = () => saveChartImage(CHARTS[0]);
