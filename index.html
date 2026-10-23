@@ -195,7 +195,7 @@ const htmlLegend = {
   }
 };
 
-// 折叠标记：在「⋯ 折叠 N 列」那一列上画淡紫阴影块 + 左右竖虚线 + 顶部文字标注，
+// 折叠标记：在「折叠 N 列」那一列上画淡紫阴影块 + 左右竖虚线 + 顶部文字标注，
 // 让被折叠的部分是一个可视的「区域」，而不是轴上一行不显眼的小字。
 // 阴影放在 beforeDatasetsDraw（盖过网格线、位于折线之下），文字与虚线放在 afterDraw（最上层）。
 // 只挂在前两张图：第三张图没有这种折叠结构
@@ -327,7 +327,7 @@ function resample(src, intervalMin, start, end, diff, since) {
   // 折叠必须放在差分「之后」：若先裁掉早期数据再求差分，视图首列的增量会因为缺少
   // 前一列而变成 null，增数图开头会出现一段空白。全量算完再截，首列仍带真实增量。
   // 折叠后 =「最早一列」+ 隔断列 +「近端若干列」：中间的列真的丢掉，用一列全 null
-  // 的隔断在 X 轴上标出「⋯ 折叠 N 列」；因 spanGaps 为 true，线段会跨过隔断连到近端，
+  // 的隔断在 X 轴上标出「折叠 N 列」；因 spanGaps 为 true，线段会跨过隔断连到近端，
   // 那条跨度的长直线 + 隔断标签，让「这里有数据被折叠」一眼可见
   let cut = 0;
   while (cut < colIdx.length - 2 && src.times[colIdx[cut]] < since) cut++;
@@ -337,7 +337,7 @@ function resample(src, intervalMin, start, end, diff, since) {
   if (cut <= head + 1) return { labels, datasets }; // 中间没有可折叠的列
   const folded = cut - head - 1;
   return {
-    labels: [labels[head], `⋯ 折叠 ${folded} 列`, ...labels.slice(cut)],
+    labels: [labels[head], `折叠 ${folded} 列`, ...labels.slice(cut)],
     datasets: datasets.map(d => ({ ...d, data: [d.data[head], null, ...d.data.slice(cut)] })),
   };
 }
@@ -481,21 +481,29 @@ function renderDaily(intervalMin, start, end) {
   const datasets = data.series.map(s => {
     const base = colorOf(s.name, s.ni), active = s.name === sel;
     const col = active ? dayRgba(base, daySlot(s.di, dayCount), 0.95) : FADED_GRAY;
-    // 线尾常年在 X 轴最右侧之外（当天只走到当前时刻），不画点的话
-    // 一眼看不出「这条线到哪儿为止」，所以末端固定给一个实心圆点做锚点；
-    // 最新一天（days 升序，下标最大的那条）再放大一圈，用来定位真正的「最新数据」
-    const tip = lastValueIndex(s.data);
+    // 只在「最新一天」这条线的末端画圆点，用来定位当前数据。
+    // 不能给每一天都画：历史日期都是完整的一天，它们的末端全落在 X 轴最右列，
+    // 最后一列会堆出一排圆点，反而看不出哪个才是最新数据。
+    // 最新一天只走到当前时刻，末端在 X 轴中间，且当天没到整点时末尾是 null，
+    // 所以必须往回找最后一个有值的点（直接取 length-1 会画在空处）。
     const isNewest = s.di === dayCount - 1;
+    const tip = isNewest ? lastValueIndex(s.data) : -1;
     return {
       label: s.day,
       data: s.data,
+      // Chart.js 默认「数组里靠前的 dataset 画在最上层」，而 series 是按 人名→日期(早→晚)
+      // 排的，不干预的话最早一天会盖住最新一天（看起来就是旧线压在新线上）。
+      // order 数值越大越先画＝越靠下，越小越后画＝越靠上，所以：
+      //   ① 未选中者是淡灰背景线，统一排到最底下（dayCount）；
+      //   ② 选中者内部按日期倒序给 order，最新一天 order=0 → 最上层。
+      order: active ? dayCount - 1 - s.di : dayCount,
       borderColor: col,
       backgroundColor: col,
       borderWidth: active ? 2 : 1,
       spanGaps: true,
       tension: 0,
-      // 只对选中者的线画点：未选中者是淡灰背景线，逐条画点会糊成一片
-      pointRadius: (ctx) => (active && ctx.dataIndex === tip ? (isNewest ? 5 : 3.5) : 0),
+      // 只给「选中者 + 最新一天」的末端画点：未选中者是淡灰背景线，画点会糊成一片
+      pointRadius: (ctx) => (active && ctx.dataIndex === tip ? 5 : 0),
       pointBackgroundColor: col,
       pointBorderColor: "#fff",
       pointBorderWidth: (ctx) => (active && ctx.dataIndex === tip ? 1.5 : 0),
@@ -640,10 +648,10 @@ function updateRangeNote() {
   btn.textContent = folded ? "展开折叠" : `仅展示近 ${RECENT_DAYS} 天数据`;
   // 状态栏文案只讲「显示范围」这件事；时间点和人数由左侧 #status 自己说，这里不再重复
   // 列数上万时 Chart.js 掉帧明显，全量展开后给个预警
-  note.textContent = folded
-    ? `　（已折叠：最早一列 + 近 ${RECENT_DAYS} 天）`
-    : dayStep ? "　（1 天档，无需折叠）"
-    : `　（已展开全部数据${cols > 2000 ? "，数据量较大可能卡顿" : ""}）`;
+  // note.textContent = folded
+  //   ? `　（已折叠：最早一列 + 近 ${RECENT_DAYS} 天）`
+  //   : dayStep ? "　（1 天档，无需折叠）"
+  //   : `　（已展开全部数据${cols > 2000 ? "，数据量较大可能卡顿" : ""}）`;
 }
 
 async function reload() {
